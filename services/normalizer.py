@@ -3,7 +3,7 @@ import re
 from typing import Dict, List, Optional
 from common.models import ParsedProduct
 
-NO_SIM_CATEGORIES = {'accessories', 'tablets', 'laptops', 'consoles'}
+NO_SIM_CATEGORIES = {'accessories', 'tablets', 'laptops', 'computers', 'consoles'}
 NO_SIM_BRANDS = {'dyson', 'sony'}
 VALID_SIM_TYPES = {'esim', 'sim+esim', '2sim', 'dual-sim'}
 STORAGE_RE = re.compile(r'(\d+)\s*(gb|tb|mb)', re.IGNORECASE)
@@ -104,7 +104,7 @@ class NormalizerService:
             errors.append("Category is required")
         if not product.price or product.price <= 0:
             errors.append("Valid price is required")
-        if product.category_id not in {'smartphones', 'tablets', 'laptops', 'accessories', 'consoles'}:
+        if product.category_id not in {'smartphones', 'tablets', 'laptops', 'computers', 'accessories', 'consoles'}:
             errors.append(f"Invalid category: {product.category_id}")
         if 'sim_type' in product.attributes and product.category_id in NO_SIM_CATEGORIES:
             errors.append(f"SIM type not valid for category: {product.category_id}")
