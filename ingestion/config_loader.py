@@ -1,7 +1,7 @@
 import yaml
 import structlog
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 try:
     from watchdog.observers import Observer

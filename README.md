@@ -32,16 +32,11 @@
   - Передача сообщений в Parser
 
 ### 2. Обработка и нормализация (Parser)
-- **parser_service.py** - ParserService
-  - Координирует парсинг
-  - Сохраняет продукты в БД
-- **rule_based_parser.py** - RuleBasedParser
-  - Парсинг на основе YAML правил
-  - Поддержка multi-line сообщений
-  - Извлечение атрибутов (флаги, SIM тип, storage, color)
-- **llm_parser.py** - LLMParser
-  - LLM-based парсинг для сложных случаев
-  - OpenAI/Anthropic поддержка
+- **parser_service.py** - ParserService: координирует парсинг и запись в БД.
+- **universal_parser.py** - UniversalParser:
+  - Один проход по всему посту: распознаёт заголовки секций, переносит контекст бренда/категории, извлекает атрибуты (флаги, SIM-тип, storage, color).
+  - Поддерживает форматы Top re:sale (флаг + sim_type перед моделью) и Bests re:sale (модель ⇒ цена ⇒ флаг с точечной разделителем тысяч).
+  - Skip-логика жёстко ограничена двумя токенами: `asis`/`асис` и `с коробкой`/`с коробки`.
 
 ### 3. Хранение (Storage)
 - **repository.py** - Repository Pattern
@@ -131,9 +126,8 @@ window_of_light/
 │   ├── telegram_client.py
 │   └── config_loader.py
 ├── parser/                 # Парсинг
-│   ├── parser_service.py
-│   ├── rule_based_parser.py
-│   └── llm_parser.py
+│   ├── parser_service.py   # Координация (parse + persist)
+│   └── universal_parser.py # Чистая функция parse_products()
 ├── services/               # Сервисы
 │   └── run_combined.py    # Combined service
 ├── storage/                # Хранение

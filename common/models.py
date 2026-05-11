@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from enum import Enum
@@ -14,9 +14,9 @@ class RawMessage(BaseModel):
     message_link: str
     chat_id: Optional[int] = None
     message_id: Optional[int] = None
-    
-    class Config:
-        json_schema_extra = {
+
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "msg_123456",
                 "text": "iPhone 15 Pro 256GB Black - 89990₽",
@@ -25,9 +25,10 @@ class RawMessage(BaseModel):
                 "channel_username": "tech_deals",
                 "message_link": "https://t.me/tech_deals/123",
                 "chat_id": -1001234567890,
-                "message_id": 123
+                "message_id": 123,
             }
         }
+    )
 
 
 class ParsedProduct(BaseModel):
@@ -42,9 +43,9 @@ class ParsedProduct(BaseModel):
     timestamp: datetime
     attributes: Dict[str, Any] = Field(default_factory=dict)
     raw_message_id: Optional[str] = None
-    
-    class Config:
-        json_schema_extra = {
+
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "category_id": "smartphones",
                 "brand": "Apple",
@@ -55,10 +56,11 @@ class ParsedProduct(BaseModel):
                 "timestamp": "2024-01-15T10:30:00Z",
                 "attributes": {
                     "storage": "256GB",
-                    "color": "Black"
-                }
+                    "color": "Black",
+                },
             }
         }
+    )
 
 
 class ProductCategory(BaseModel):

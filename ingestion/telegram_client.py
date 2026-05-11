@@ -1,99 +1,121 @@
-"""Telegram Ingestion Service"""
+"""Telegram MTProto ingestion service.
+
+Streams messages from monitored channels and forwards them to the parser.
+Streaming (vs. preloading the full history into memory) keeps memory usage
+constant for channels with tens of thousands of posts and lets parsing happen
+in parallel with downloading.
+"""
+from __future__ import annotations
+
 import asyncio
+from dataclasses import dataclass, field
+from typing import Optional, Set
+
 import structlog
-from datetime import datetime
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
-from common.models import RawMessage
+
 from common.config import settings
+from common.models import RawMessage
 
 logger = structlog.get_logger(__name__)
 
+
+@dataclass
+class _Monitor:
+    chat_id: int
+    username: str
+    title: str
+    last_message_id: int = 0
+    processed_message_ids: Set[int] = field(default_factory=set)
+    scan_complete: bool = False
+
+
 class TelegramIngestionService:
-    def __init__(self, parser_service=None):
+    def __init__(self, parser_service=None) -> None:
         self.parser_service = parser_service
-        self.client = None
-        self.monitors = {}
+        self.client: Optional[TelegramClient] = None
+        self.monitors: dict[int, _Monitor] = {}
         self.messages_sent = 0
         self.messages_parsed = 0
         self._running = False
         self._scan_in_progress = False
+        self._channel_lock = asyncio.Lock()
 
-    async def initialize(self):
-        """Initialize Telegram client"""
+    async def initialize(self) -> None:
+        """Initialise the Telethon client.  Idempotent."""
+        if self.client is not None:
+            return
         try:
-            self.client = TelegramClient('wol_session', settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
+            self.client = TelegramClient(
+                settings.TELEGRAM_SESSION,
+                settings.TELEGRAM_API_ID,
+                settings.TELEGRAM_API_HASH,
+            )
             await self.client.start(phone=settings.TELEGRAM_PHONE)
-            logger.info("✅ Telegram client initialized")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Telegram: {e}")
+            logger.info("Telegram client initialised")
+        except Exception as exc:
+            logger.error("Telegram init failed", error=str(exc))
             raise
 
-    async def start_monitoring(self):
-        """Start monitoring channels"""
-        logger.info("📱 Starting monitoring...")
+    async def start_monitoring(self) -> None:
+        """Start monitoring channels: full history scan, then live updates."""
+        logger.info("Telegram ingestion: start monitoring")
         self._running = True
-        
-        # Scan history first
         await self.scan_history()
-        
-        # Then listen for new messages
-        await self.client.run_until_disconnected()
+        if self.client is not None:
+            await self.client.run_until_disconnected()
 
-    async def scan_history(self):
-        """Scan history for all monitored channels"""
-        if self._scan_in_progress:
+    async def scan_history(self) -> None:
+        """Stream historical messages from each monitored channel.
+
+        Messages are processed as they arrive, so memory stays bounded.  Each
+        channel is scanned sequentially to respect the global flood-wait.
+        """
+        if self._scan_in_progress or self.client is None:
             return
-            
         self._scan_in_progress = True
-        logger.info("📚 Starting full history scan...")
+        logger.info("Full history scan starting", channels=len(self.monitors))
+        try:
+            for monitor in list(self.monitors.values()):
+                await self._scan_one(monitor)
+        finally:
+            self._scan_in_progress = False
 
-        for key, monitor in self.monitors.items():
-            try:
-                logger.info(f"📚 Scanning history for {monitor.username}")
-                
-                # Get all messages
-                all_messages = []
-                async for message in self.client.iter_messages(monitor.chat_id, limit=None):
-                    all_messages.append(message)
-                
-                processed_count = 0
-                skipped_count = 0
-                
-                # Process messages
-                for message in all_messages:
-                    if message.id not in monitor.processed_message_ids:
-                        await self._process_single_message(message, monitor)
-                        monitor.processed_message_ids.add(message.id)
-                        if message.id > monitor.last_message_id:
-                            monitor.last_message_id = message.id
-                        processed_count += 1
-                    else:
-                        skipped_count += 1
-                
-                monitor.scan_complete = True
-                logger.info(
-                    f"✅ Scan complete for {monitor.username}",
-                    total=len(all_messages),
-                    processed=processed_count,
-                    skipped=skipped_count,
-                    sent=self.messages_sent,
-                    parsed=self.messages_parsed
-                )
+    async def _scan_one(self, monitor: _Monitor) -> None:
+        processed = 0
+        skipped = 0
+        try:
+            logger.info("Scanning channel", username=monitor.username)
+            assert self.client is not None
+            async for message in self.client.iter_messages(monitor.chat_id, limit=None):
+                if message.id in monitor.processed_message_ids:
+                    skipped += 1
+                    continue
+                await self._process_single_message(message, monitor)
+                monitor.processed_message_ids.add(message.id)
+                if message.id > monitor.last_message_id:
+                    monitor.last_message_id = message.id
+                processed += 1
+            monitor.scan_complete = True
+            logger.info(
+                "Scan complete",
+                username=monitor.username,
+                processed=processed,
+                skipped=skipped,
+                sent=self.messages_sent,
+                parsed=self.messages_parsed,
+            )
+        except Exception as exc:
+            logger.error("Scan failed", username=monitor.username, error=str(exc))
 
-            except Exception as e:
-                logger.error(f"❌ Error scanning history for {monitor.username}: {e}")
-
-        self._scan_in_progress = False
-
-    async def _process_single_message(self, message, monitor):
-        """Process single message"""
+    async def _process_single_message(self, message, monitor: _Monitor) -> None:
         if not message.text or len(message.text.strip()) < 5:
             return
-
         try:
             chat = await message.get_chat()
-            channel_username = getattr(chat, 'username', None) or str(getattr(chat, 'id', 'unknown'))
+            channel_username = (
+                getattr(chat, "username", None) or str(getattr(chat, "id", "unknown"))
+            )
             message_link = f"https://t.me/{channel_username}/{message.id}"
 
             raw_message = RawMessage(
@@ -101,81 +123,70 @@ class TelegramIngestionService:
                 text=message.text,
                 timestamp=message.date,
                 channel_id=str(monitor.chat_id),
-                message_link=message_link
+                message_link=message_link,
             )
 
-            logger.debug(
-                f"📩 Message processed: {message.id}",
-                channel=monitor.chat_id,
-                has_text=bool(message.text),
-                text_len=len(message.text) if message.text else 0
-            )
+            if self.parser_service is not None:
+                products = await self.parser_service.parse_raw_message(raw_message)
+                # Newer ParserService returns a list; older versions returned None.
+                count = len(products) if products else 0
+                self.messages_parsed += count
+            self.messages_sent += 1
+        except Exception as exc:
+            logger.error("Error processing message", message_id=message.id, error=str(exc))
 
-            # Parse message
-            if self.parser_service:
-                await self.parser_service.parse_raw_message(raw_message)
-                self.messages_sent += 1
-
-        except Exception as e:
-            logger.error(f"Error processing message {message.id}: {e}")
-
-    async def add_channel(self, link, title=None):
-        """Add channel to monitor"""
-        try:
-            entity = await self.client.get_entity(link)
-            chat_id = entity.id
-            username = getattr(entity, 'username', None) or str(chat_id)
-            
-            if chat_id not in self.monitors:
-                self.monitors[chat_id] = type('obj', (object,), {
-                    'chat_id': chat_id,
-                    'username': username,
-                    'title': title or username,
-                    'last_message_id': 0,
-                    'processed_message_ids': set(),
-                    'scan_complete': False
-                })
-                logger.info(f"✅ Channel added: {username} ({chat_id})")
-                return True
-            else:
-                logger.info(f"⏭️ Channel already exists: {username}")
-                return False
-        except Exception as e:
-            logger.error(f"❌ Failed to add channel {link}: {e}")
+    async def add_channel(self, link: str, title: Optional[str] = None) -> bool:
+        if self.client is None:
             return False
-
-    async def remove_channel(self, link):
-        """Remove channel from monitoring"""
-        try:
-            entity = await self.client.get_entity(link)
-            chat_id = entity.id
-            
-            if chat_id in self.monitors:
-                del self.monitors[chat_id]
-                logger.info(f"✅ Channel removed: {link}")
+        async with self._channel_lock:
+            try:
+                entity = await self.client.get_entity(link)
+                chat_id = entity.id
+                username = getattr(entity, "username", None) or str(chat_id)
+                if chat_id in self.monitors:
+                    logger.info("Channel already monitored", username=username)
+                    return False
+                self.monitors[chat_id] = _Monitor(
+                    chat_id=chat_id,
+                    username=username,
+                    title=title or username,
+                )
+                logger.info("Channel added", username=username, chat_id=chat_id)
                 return True
-            else:
-                logger.warning(f"⚠️ Channel not found: {link}")
+            except Exception as exc:
+                logger.error("Failed to add channel", link=link, error=str(exc))
                 return False
-        except Exception as e:
-            logger.error(f"❌ Failed to remove channel {link}: {e}")
+
+    async def remove_channel(self, link: str) -> bool:
+        if self.client is None:
             return False
+        async with self._channel_lock:
+            try:
+                entity = await self.client.get_entity(link)
+                if entity.id in self.monitors:
+                    del self.monitors[entity.id]
+                    logger.info("Channel removed", link=link)
+                    return True
+                logger.warning("Channel not monitored", link=link)
+                return False
+            except Exception as exc:
+                logger.error("Failed to remove channel", link=link, error=str(exc))
+                return False
 
     def get_monitored_channels(self):
-        """Get list of monitored channels"""
         return [
             {
-                'id': m.chat_id,
-                'username': m.username,
-                'title': m.title,
-                'scan_complete': m.scan_complete
+                "id": m.chat_id,
+                "username": m.username,
+                "title": m.title,
+                "scan_complete": m.scan_complete,
             }
             for m in self.monitors.values()
         ]
 
-    async def stop(self):
-        """Stop monitoring"""
+    async def stop(self) -> None:
         self._running = False
-        if self.client:
+        if self.client is not None:
             await self.client.disconnect()
-        logger.info("🛑 Monitoring stopped")
+            self.client = None
+        logger.info("Telegram monitoring stopped")

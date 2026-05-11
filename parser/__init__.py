@@ -1,5 +1,4 @@
 from .parser_service import ParserService
-from .rule_based_parser import RuleBasedParser
-from .llm_parser import LLMParser
+from .universal_parser import parse_products
 
-__all__ = ["ParserService", "RuleBasedParser", "LLMParser"]
+__all__ = ["ParserService", "parse_products"]

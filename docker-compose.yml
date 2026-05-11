@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15
@@ -31,54 +29,24 @@ services:
       timeout: 5s
       retries: 5
 
-  ingestion:
+  # Объединённый сервис: ingestion + parser + storage + FastAPI в одном процессе.
+  # Соответствует фактическому entrypoint в services/run_combined.py.
+  app:
     build: .
-    container_name: wol_ingestion
-    command: python -m services.run_ingestion
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-
-  parser:
-    build: .
-    container_name: wol_parser
-    command: python -m services.run_parser
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-
-  storage:
-    build: .
-    container_name: wol_storage
-    command: python -m services.run_storage
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-
-  api:
-    build: .
-    container_name: wol_api
-    command: python -m services.run_api
+    container_name: wol_app
+    command: python -m services.run_combined
     ports:
       - "8000:8000"
     environment:
       - DB_HOST=postgres
       - REDIS_HOST=redis
+    env_file:
+      - .env
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

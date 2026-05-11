@@ -128,47 +128,31 @@ POST http://localhost:8002/api/v1/channels/remove
 }
 ```
 
-## 🧪 Тестирование парсеров
+## 🧪 Тестирование парсера
 
-### Test TopResaleParser
+Универсальный парсер покрывает оба формата (Top re:sale и Bests re:sale).
+
 ```bash
-python -c "
-from datetime import datetime
-from common.models import RawMessage
-from parser.top_resale_parser import TopResaleParser
-
-with open('Top resale.txt', 'r', encoding='utf-8') as f:
-    content = f.read().replace('\r\n', '\n').replace('\r', '\n')
-
-parser = TopResaleParser()
-raw = RawMessage(id='test', text=content, timestamp=datetime.utcnow(), channel_id='top_resale', message_link='test')
-products = parser.parse(raw)
-
-print(f'TopResaleParser: {len(products)} products')
-"
+pytest tests/test_parsers.py -v
 ```
 
-### Test BestsResaleParser
-```bash
-python -c "
+Если нужно прогнать парсер вручную на собственных данных:
+```python
 from datetime import datetime
 from common.models import RawMessage
-from parser.bests_resale_parser import BestsResaleParser
+from parser.universal_parser import parse_products
 
-with open('Best Re sale.txt', 'r', encoding='utf-8') as f:
-    content = f.read().replace('\r\n', '\n').replace('\r', '\n')
+with open('your_post.txt', encoding='utf-8') as f:
+    text = f.read()
 
-parser = BestsResaleParser()
-raw = RawMessage(id='test', text=content, timestamp=datetime.utcnow(), channel_id='bests_resale', message_link='test')
-products = parser.parse(raw)
-
-print(f'BestsResaleParser: {len(products)} products')
-"
-```
-
-### Full validation
-```bash
-python final_validation.py
+raw = RawMessage(
+    id='manual',
+    text=text,
+    timestamp=datetime.utcnow(),
+    channel_id='manual',
+    message_link='https://t.me/manual/1',
+)
+print(len(parse_products(raw)))
 ```
 
 ## 🛠️ Troubleshooting
